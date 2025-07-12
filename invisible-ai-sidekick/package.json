@@ -1,0 +1,33 @@
+{
+  "name": "invisible-ai-sidekick",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "start": "npm run build && electron .",
+    "dev": "concurrently \"npm run watch\" \"npm run electron-dev\"",
+    "build": "tsc && cp dist/renderer/index.js public/renderer.js",
+    "watch": "tsc -w",
+    "electron-dev": "wait-on dist/main/index.js && electron .",
+    "dist": "npm run build && electron-builder",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/mime": "^3.0.4",
+    "@types/node": "^24.0.13",
+    "concurrently": "^9.2.0",
+    "electron": "^37.2.1",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.8.3",
+    "wait-on": "^8.0.3"
+  },
+  "dependencies": {
+    "screenshot-desktop": "^1.15.1",
+    "@google/generative-ai": "^0.21.0",
+    "dotenv": "^16.4.5"
+  }
+}
