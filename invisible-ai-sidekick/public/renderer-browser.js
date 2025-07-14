@@ -5,19 +5,24 @@ console.log('Document readyState:', document.readyState);
 console.log('electronAPI exists:', !!window.electronAPI);
 
 let isCapturing = false;
+let isInterviewMode = false; // Default OFF - voice control mode
 
 function initializeApp() {
   console.log('=== INITIALIZING APP ===');
   
   const toggleCaptureBtn = document.getElementById('toggleCapture');
   const toggleClickThroughBtn = document.getElementById('toggleClickThrough');
+  const toggleInterviewModeBtn = document.getElementById('toggleInterviewMode');
   const statusIndicator = document.getElementById('statusIndicator');
   const statusText = document.getElementById('statusText');
   const responseText = document.getElementById('responseText');
+  const commandInput = document.getElementById('commandInput');
+  const sendCommand = document.getElementById('sendCommand');
 
   console.log('DOM elements found:', {
     toggleCaptureBtn: !!toggleCaptureBtn,
     toggleClickThroughBtn: !!toggleClickThroughBtn,
+    toggleInterviewModeBtn: !!toggleInterviewModeBtn,
     statusIndicator: !!statusIndicator,
     statusText: !!statusText,
     responseText: !!responseText
@@ -34,6 +39,29 @@ function initializeApp() {
   }
 
   console.log('=== ADDING EVENT LISTENERS ===');
+  
+  // Interview Mode button
+  if (toggleInterviewModeBtn) {
+    toggleInterviewModeBtn.addEventListener('click', async () => {
+      console.log('Interview mode button clicked');
+      isInterviewMode = !isInterviewMode;
+      toggleInterviewModeBtn.textContent = isInterviewMode ? 'Interview Mode: ON' : 'Interview Mode: OFF';
+      toggleInterviewModeBtn.classList.toggle('active', isInterviewMode);
+      
+      // Update Gemini with new mode
+      if (isCapturing) {
+        await window.electronAPI.setInterviewMode(isInterviewMode);
+      }
+      
+      // Update response text to show mode change
+      if (responseText) {
+        responseText.textContent = isInterviewMode 
+          ? 'Interview Mode ON - I will explain what I see and hear to help you'
+          : 'Voice Control Mode ON - Say commands to control your Mac';
+      }
+    });
+    console.log('✓ Interview mode event listener added');
+  }
   
   // Click Through button
   if (toggleClickThroughBtn) {
@@ -52,69 +80,97 @@ function initializeApp() {
   // Capture button
   toggleCaptureBtn.addEventListener('click', async () => {
     console.log('=== CAPTURE BUTTON CLICKED ===');
-    console.log('Current isCapturing state:', isCapturing);
+    console.log('Current capture state:', isCapturing);
     
     try {
       if (!isCapturing) {
         console.log('Starting capture...');
-        if (responseText) {
-          responseText.textContent = 'Initializing AI...';
-          console.log('Set response text to: Initializing AI...');
-        }
+        toggleCaptureBtn.textContent = 'Stop';
+        toggleCaptureBtn.classList.add('stop');
         
         console.log('Calling electronAPI.initializeGemini()...');
-        const initialized = await window.electronAPI.initializeGemini();
+        const initialized = await window.electronAPI.initializeGemini(isInterviewMode);
         console.log('Gemini initialized result:', initialized);
         
         if (initialized) {
-          console.log('Gemini initialized successfully, starting capture...');
           isCapturing = true;
-          toggleCaptureBtn.textContent = 'Stop';
+          console.log('Starting capture process...');
+          startCapture();
           
-          if (statusText) statusText.textContent = 'Capturing';
           if (statusIndicator) statusIndicator.classList.add('active');
-          if (responseText) responseText.textContent = 'Starting screen and audio capture...';
-          
-          // Start actual capture
-          await startCapture();
+          if (responseText) responseText.textContent = 'AI Connected - Ready for capture';
         } else {
-          console.log('Gemini initialization failed');
-          if (responseText) {
-            responseText.textContent = 'Failed to initialize AI';
-            console.log('Response text changed to: Failed to initialize AI');
-          }
+          console.error('Failed to initialize Gemini');
+          toggleCaptureBtn.textContent = 'Start';
+          toggleCaptureBtn.classList.remove('stop');
+          if (responseText) responseText.textContent = 'Failed to initialize AI';
         }
       } else {
         console.log('Stopping capture...');
         isCapturing = false;
-        stopCapture();
         toggleCaptureBtn.textContent = 'Start';
-        if (statusText) statusText.textContent = 'Ready';
+        toggleCaptureBtn.classList.remove('stop');
+        
+        stopCapture();
+        
         if (statusIndicator) statusIndicator.classList.remove('active');
         if (responseText) responseText.textContent = 'AI Disconnected';
         await window.electronAPI.stopCapture();
       }
     } catch (error) {
-      console.error('Capture button error:', error);
-      if (responseText) responseText.textContent = 'Error: ' + error;
+      console.error('Capture toggle error:', error);
+      toggleCaptureBtn.textContent = 'Start';
+      toggleCaptureBtn.classList.remove('stop');
+      isCapturing = false;
     }
   });
-  
   console.log('✓ Capture event listener added');
+  
+  // Command input handlers
+  if (sendCommand && commandInput) {
+    const sendCommandHandler = async () => {
+      const command = commandInput.value.trim();
+      if (!command) return;
+      
+      if (!isCapturing) {
+        alert('Please start capture first');
+        return;
+      }
+      
+      console.log('Sending command:', command);
+      try {
+        await window.electronAPI.sendTextMessage(command);
+        commandInput.value = '';
+      } catch (error) {
+        console.error('Failed to send command:', error);
+      }
+    };
+    
+    sendCommand.addEventListener('click', sendCommandHandler);
+    commandInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        sendCommandHandler();
+      }
+    });
+    console.log('✓ Command input event listeners added');
+  }
 
   // AI Status listener
   window.electronAPI.onAIStatus((status) => {
     console.log('AI Status update:', status);
     if (statusText && statusIndicator) {
-      if (status === 'connected') {
-        statusText.textContent = 'AI Connected';
-        statusIndicator.style.backgroundColor = '#4CAF50';
-      } else if (status === 'error') {
-        statusText.textContent = 'AI Error';
-        statusIndicator.style.backgroundColor = '#f44336';
-      } else if (status === 'disconnected') {
-        statusText.textContent = 'AI Disconnected';
-        statusIndicator.style.backgroundColor = '#666';
+      switch(status) {
+        case 'connected':
+          statusText.textContent = 'Connected';
+          statusIndicator.classList.add('active');
+          break;
+        case 'error':
+          statusText.textContent = 'Error';
+          statusIndicator.classList.remove('active');
+          break;
+        default:
+          statusText.textContent = 'Disconnected';
+          statusIndicator.classList.remove('active');
       }
     }
   });
@@ -124,176 +180,147 @@ function initializeApp() {
     console.log('AI Response received:', response);
     if (response.type === 'text' && responseText) {
       responseText.textContent = response.content;
+    } else if (response.type === 'system' && responseText) {
+      responseText.innerHTML = `<span style="color: #00ff00;">${response.content}</span>`;
     }
   });
 
-  console.log('✓ All event listeners added successfully');
+  console.log('=== INITIALIZATION COMPLETE ===');
 }
 
-// Initialize immediately or when DOM is ready
-console.log('=== SETTING UP DOM READY HANDLER ===');
+// Wait for DOM to load
 if (document.readyState === 'loading') {
-  console.log('DOM still loading, adding DOMContentLoaded listener');
-  document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOMContentLoaded fired');
-    initializeApp();
-  });
+  console.log('DOM loading, adding event listener...');
+  document.addEventListener('DOMContentLoaded', initializeApp);
 } else {
-  console.log('DOM already ready, initializing immediately');
+  console.log('DOM already loaded, initializing...');
   initializeApp();
 }
 
-console.log('=== RENDERER SCRIPT COMPLETED ===');
+// Global error handler
+window.addEventListener('error', (event) => {
+  console.error('=== GLOBAL ERROR ===', event.error);
+});
+
+// Combined capture state
+let captureState = {
+  audioBuffer: [],
+  currentScreenshot: null,
+  lastSendTime: 0,
+  sendInterval: null
+};
 
 // Capture functionality
 let screenStream = null;
 let audioContext = null;
 let scriptProcessor = null;
-let screenshotInterval = null;
-
-// Smart context tracking
-let lastScreenshot = null;
-let lastAudioLevel = 0;
-let conversationState = {
-  hasRecentQuestion: false,
-  lastQuestionTime: 0,
-  awaitingResponse: false
-};
 
 async function startCapture() {
+  console.log('=== STARTING CAPTURE ===');
+  
   try {
-    console.log('Starting screen capture...');
-    
-    // 1. Get screen stream
+    // 1. Get screen capture with system audio using Electron's display media handler
+    console.log('Getting display media...');
     screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        displaySurface: 'monitor',
-        frameRate: 5
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
       },
-      audio: false
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
     });
     
     console.log('Screen capture started');
     
-    // 2. Get microphone audio stream (lower quality for faster uploads)
+    // 2. Get microphone audio stream
     console.log('Starting microphone capture...');
     const micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
-        sampleRate: 16000  // Reduced from 24000 to 16000
+        sampleRate: 16000,
+        channelCount: 1
       }
     });
+    console.log('Microphone capture started');
     
-    // 3. Get system audio via display media (if supported)
-    console.log('Starting system audio capture...');
+    // 3. Extract system audio from screen stream if available
     let systemAudioStream = null;
     try {
-      systemAudioStream = await navigator.mediaDevices.getDisplayMedia({
-        video: false,
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          sampleRate: 16000  // Reduced from 24000 to 16000
-        }
-      });
-      console.log('System audio capture started');
+      const audioTracks = screenStream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        systemAudioStream = new MediaStream([audioTracks[0]]);
+        console.log('System audio available');
+      }
     } catch (error) {
-      console.log('System audio not available, using microphone only:', error.message);
+      console.log('System audio not available:', error.message);
     }
-    
-    console.log('Audio capture configured');
     
     // 4. Start screenshot capture
     startScreenshotCapture();
     
-    // 5. Start audio processing (both mic and system audio)
+    // 5. Start audio processing
     startAudioProcessing(micStream, systemAudioStream);
     
-    const responseText = document.getElementById('responseText');
-    if (responseText) responseText.textContent = 'Capturing screen and audio - Ask questions!';
+    // 6. Start combined data sender
+    startCombinedSender();
     
-  } catch (error) {
-    console.error('Failed to start capture:', error);
     const responseText = document.getElementById('responseText');
-    if (responseText) responseText.textContent = 'Capture failed: ' + error.message;
+    if (responseText) responseText.textContent = 'Capturing screen and audio - Speak naturally!';
+    
+    console.log('=== CAPTURE STARTED SUCCESSFULLY ===');
+  } catch (error) {
+    console.error('Capture error:', error);
+    const responseText = document.getElementById('responseText');
+    if (responseText) responseText.textContent = `Error: ${error.message}`;
+    isCapturing = false;
   }
 }
 
 function startScreenshotCapture() {
-  console.log('Setting up screenshot capture...');
-  const canvas = document.createElement('canvas');
   const video = document.createElement('video');
   video.srcObject = screenStream;
   video.play();
   
   video.onloadedmetadata = () => {
-    // Reduce resolution for faster uploads (max 1280px wide)
-    const maxWidth = 1280;
-    const aspectRatio = video.videoHeight / video.videoWidth;
-    
-    if (video.videoWidth > maxWidth) {
-      canvas.width = maxWidth;
-      canvas.height = maxWidth * aspectRatio;
-    } else {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
-    
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
+    
     console.log('Screenshot resolution:', canvas.width + 'x' + canvas.height);
     
-    console.log('Starting screenshot interval');
-    screenshotInterval = setInterval(() => {
+    // Capture screenshots continuously
+    setInterval(() => {
       if (!isCapturing) return;
       
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      // Only send screenshot if there's recent conversation activity
-      const now = Date.now();
-      const hasRecentActivity = conversationState.hasRecentQuestion && (now - conversationState.lastQuestionTime < 10000); // 10 seconds
-      
-      if (hasRecentActivity || !lastScreenshot) {
-        canvas.toBlob(async (blob) => {
-          if (!blob) return;
-          
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-            const base64 = reader.result;
-            
-            // Simple change detection - only send if different from last
-            if (base64 !== lastScreenshot) {
-              console.log('Sending screenshot, size:', base64.length, 'chars');
-              const startTime = Date.now();
-              
-              try {
-                await window.electronAPI.sendImageContent(base64);
-                const endTime = Date.now();
-                console.log('✓ Screenshot upload completed in', (endTime - startTime) + 'ms');
-                lastScreenshot = base64;
-              } catch (error) {
-                const endTime = Date.now();
-                console.error('✗ Screenshot upload failed after', (endTime - startTime) + 'ms:', error);
-              }
-            }
-          };
-          reader.readAsDataURL(blob);
-        }, 'image/jpeg', 0.5); // Reduced quality from 0.7 to 0.5 for faster uploads
-      }
-      
-    }, 1500); // Every 1.5 seconds but smart filtering
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          captureState.currentScreenshot = reader.result;
+        };
+        reader.readAsDataURL(blob);
+      }, 'image/jpeg', 0.7);
+    }, 1000); // Every second
   };
 }
 
 function startAudioProcessing(micStream, systemAudioStream) {
   console.log('Setting up audio processing...');
-  audioContext = new AudioContext({ sampleRate: 16000 }); // Reduced from 24000
+  audioContext = new AudioContext({ sampleRate: 16000 });
   
-  // Create sources for both streams
+  // Create sources
   const micSource = audioContext.createMediaStreamSource(micStream);
   let systemSource = null;
   
-  // Create a mixer to combine both audio sources
+  // Create mixer
   const mixer = audioContext.createGain();
   
   // Connect microphone
@@ -304,91 +331,97 @@ function startAudioProcessing(micStream, systemAudioStream) {
     try {
       systemSource = audioContext.createMediaStreamSource(systemAudioStream);
       systemSource.connect(mixer);
-      console.log('System audio connected to mixer');
+      console.log('System audio connected');
     } catch (error) {
-      console.log('Could not connect system audio:', error.message);
+      console.warn('Could not connect system audio:', error);
     }
   }
   
-  scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1); // Larger buffer
-  
-  let audioBuffer = [];
-  let lastSent = 0;
+  // Create processor
+  scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
   
   scriptProcessor.onaudioprocess = (event) => {
     if (!isCapturing) return;
     
-    const inputBuffer = event.inputBuffer;
-    const inputData = inputBuffer.getChannelData(0);
+    const inputData = event.inputBuffer.getChannelData(0);
+    const pcm16 = new Int16Array(inputData.length);
     
     // Convert to PCM16
-    const pcm16 = new Int16Array(inputData.length);
     for (let i = 0; i < inputData.length; i++) {
-      const s = Math.max(-1, Math.min(1, inputData[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      pcm16[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
     }
     
-    // Accumulate audio data
-    audioBuffer.push(...pcm16);
-    
-    // Calculate audio level to detect speech/system audio
-    let audioLevel = 0;
-    for (let i = 0; i < inputData.length; i++) {
-      audioLevel += Math.abs(inputData[i]);
-    }
-    audioLevel = audioLevel / inputData.length;
-    
-    // Send audio when there's significant activity (lower threshold for system audio)
-    const now = Date.now();
-    const hasAudioActivity = audioLevel > 0.005; // Lower threshold to catch system audio
-    const shouldSendAudio = hasAudioActivity && (now - lastSent > 5000) && audioBuffer.length > 32000; // Wait 5 seconds between sends
-    
-    if (shouldSendAudio) {
-      const audioChunk = audioBuffer.slice(0, 32000); // 2 seconds at 16kHz
-      audioBuffer = audioBuffer.slice(32000);
-      
-      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioChunk.buffer)));
-      
-      console.log('Sending audio chunk, size:', base64Audio.length, 'chars');
-      const startTime = Date.now();
-      
-      window.electronAPI.sendAudioContent(base64Audio).then(() => {
-        const endTime = Date.now();
-        console.log('✓ Audio upload completed in', (endTime - startTime) + 'ms');
-      }).catch(error => {
-        const endTime = Date.now();
-        console.error('✗ Audio upload failed after', (endTime - startTime) + 'ms:', error);
-      });
-      
-      lastSent = now;
-      conversationState.hasRecentQuestion = true;
-      conversationState.lastQuestionTime = now;
-      console.log('Sent 2-second audio chunk (16kHz, level:', audioLevel.toFixed(4), ')');
-    }
-    
-    lastAudioLevel = audioLevel;
+    // Add to buffer - no limits as requested
+    captureState.audioBuffer.push(...pcm16);
   };
   
-  // Connect mixer to processor
+  // Connect everything
   mixer.connect(scriptProcessor);
   scriptProcessor.connect(audioContext.destination);
   
-  console.log('Audio processing started (mic + system audio)');
+  console.log('Audio processing started');
+}
+
+function startCombinedSender() {
+  // Send combined data every 3 seconds
+  captureState.sendInterval = setInterval(async () => {
+    if (!isCapturing) return;
+    
+    const now = Date.now();
+    
+    // Prepare combined data
+    const combinedData = {};
+    
+    // Add screenshot if available
+    if (captureState.currentScreenshot) {
+      combinedData.image = captureState.currentScreenshot;
+    }
+    
+    // Add all accumulated audio
+    if (captureState.audioBuffer.length > 0) {
+      // Convert entire buffer to base64
+      const audioArray = new Int16Array(captureState.audioBuffer);
+      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioArray.buffer)));
+      combinedData.audio = base64Audio;
+      
+      console.log('Sending combined data - Audio samples:', captureState.audioBuffer.length, 'Screenshot:', !!combinedData.image);
+      
+      // Clear buffer after sending
+      captureState.audioBuffer = [];
+    }
+    
+    // Send if we have any data
+    if (combinedData.image || combinedData.audio) {
+      try {
+        await window.electronAPI.sendCombinedContent(combinedData);
+        captureState.lastSendTime = now;
+      } catch (error) {
+        console.error('Failed to send combined content:', error);
+      }
+    }
+  }, 2000); // Every 2 seconds
 }
 
 function stopCapture() {
-  console.log('Stopping capture...');
+  console.log('=== STOPPING CAPTURE ===');
   
-  if (screenshotInterval) {
-    clearInterval(screenshotInterval);
-    screenshotInterval = null;
+  // Stop combined sender
+  if (captureState.sendInterval) {
+    clearInterval(captureState.sendInterval);
+    captureState.sendInterval = null;
   }
   
+  // Clear capture state
+  captureState.audioBuffer = [];
+  captureState.currentScreenshot = null;
+  
+  // Stop streams
   if (screenStream) {
     screenStream.getTracks().forEach(track => track.stop());
     screenStream = null;
   }
   
+  // Stop audio
   if (scriptProcessor) {
     scriptProcessor.disconnect();
     scriptProcessor = null;
@@ -401,3 +434,5 @@ function stopCapture() {
   
   console.log('Capture stopped');
 }
+
+console.log('=== RENDERER SCRIPT LOADED ===');

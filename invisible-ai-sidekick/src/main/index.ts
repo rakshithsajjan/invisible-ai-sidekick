@@ -2,6 +2,8 @@ import { app, BrowserWindow, screen, globalShortcut, ipcMain, session, desktopCa
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { GeminiService } from '../services/geminiService';
+import { voiceCommandHandler } from '../services/voiceCommandHandler';
+import { pcmToWav } from '../utils/audioUtils';
 
 dotenv.config();
 
@@ -114,9 +116,46 @@ ipcMain.handle('toggle-click-through', () => {
   return false;
 });
 
+// Initialize voice command handler
+async function initializeVoiceCommands() {
+  try {
+    await voiceCommandHandler.initialize();
+    
+    // Listen for feedback to show in UI
+    voiceCommandHandler.on('feedback', (message: string) => {
+      mainWindow?.webContents.send('ai-response', { 
+        type: 'system', 
+        content: `🎯 ${message}` 
+      });
+    });
+    
+    // Listen for text responses
+    voiceCommandHandler.on('textResponse', (text: string) => {
+      mainWindow?.webContents.send('ai-response', { 
+        type: 'text', 
+        content: text 
+      });
+    });
+    
+    // Listen for command execution results
+    voiceCommandHandler.on('commandExecuted', (command: any) => {
+      mainWindow?.webContents.send('ai-response', { 
+        type: 'system', 
+        content: `✅ Command executed: ${command.command}` 
+      });
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to initialize voice commands:', error);
+    return false;
+  }
+}
+
 // Initialize Gemini session
-async function initializeGemini() {
+async function initializeGemini(interviewMode: boolean = false) {
   console.log('Initializing Gemini...');
+  console.log('Interview Mode:', interviewMode);
   console.log('API Key exists:', !!process.env.GEMINI_API_KEY);
   
   if (!process.env.GEMINI_API_KEY) {
@@ -126,7 +165,7 @@ async function initializeGemini() {
 
   geminiService = new GeminiService({
     apiKey: process.env.GEMINI_API_KEY,
-    model: 'gemini-2.5-flash-lite-preview-06-17'  // Using 2.5 lite model
+    model: 'gemini-1.5-flash'  // Using stable model
   });
 
   geminiService.on('connected', () => {
@@ -134,9 +173,17 @@ async function initializeGemini() {
     mainWindow?.webContents.send('ai-status', 'connected');
   });
 
-  geminiService.on('response', (text: string) => {
+  geminiService.on('response', async (text: string) => {
     console.log('Gemini response:', text);
-    mainWindow?.webContents.send('ai-response', { type: 'text', content: text });
+    
+    // Pass response to voice command handler
+    try {
+      await voiceCommandHandler.handleGeminiResponse(text);
+    } catch (error) {
+      console.error('Voice command handling error:', error);
+      // Still send the response to UI even if command fails
+      mainWindow?.webContents.send('ai-response', { type: 'text', content: text });
+    }
   });
 
   geminiService.on('error', (error: Error) => {
@@ -148,22 +195,29 @@ async function initializeGemini() {
     mainWindow?.webContents.send('ai-status', 'disconnected');
   });
 
-  const initialized = await geminiService.initializeSession();
+  const initialized = await geminiService.initializeSession(interviewMode);
   console.log('Gemini initialization result:', initialized);
   return initialized;
 }
 
 // IPC Handlers (following cheating-daddy pattern)
-ipcMain.handle('initialize-gemini', async () => {
+ipcMain.handle('initialize-gemini', async (_event, interviewMode: boolean = false) => {
   console.log('=== IPC: initialize-gemini called ===');
+  console.log('Interview Mode:', interviewMode);
   try {
+    // Initialize voice commands first
+    const voiceInitResult = await initializeVoiceCommands();
+    if (!voiceInitResult) {
+      console.warn('Voice commands initialization failed, continuing without voice control');
+    }
+    
     // Add timeout to prevent infinite hanging
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Initialization timeout')), 10000)
     );
     
     const result = await Promise.race([
-      initializeGemini(),
+      initializeGemini(interviewMode),
       timeoutPromise
     ]);
     
@@ -197,13 +251,42 @@ ipcMain.handle('send-audio-content', async (_event, audioData: string) => {
     return;
   }
   
-  // Audio should be base64 PCM data
+  // Convert PCM to WAV format
+  const wavData = pcmToWav(audioData);
   await geminiService.sendRealtimeInput({
     audio: {
-      data: audioData,
-      mimeType: 'audio/pcm;rate=24000'
+      data: wavData,
+      mimeType: 'audio/wav'
     }
   });
+});
+
+ipcMain.handle('send-combined-content', async (_event, data: { image?: string; audio?: string }) => {
+  if (!geminiService) {
+    console.error('Gemini not initialized');
+    return;
+  }
+  
+  const parts: any = {};
+  
+  if (data.image) {
+    const base64Data = data.image.replace(/^data:image\/\w+;base64,/, '');
+    parts.media = {
+      data: base64Data,
+      mimeType: 'image/jpeg'
+    };
+  }
+  
+  if (data.audio) {
+    // Convert PCM to WAV format
+    const wavData = pcmToWav(data.audio);
+    parts.audio = {
+      data: wavData,
+      mimeType: 'audio/wav'
+    };
+  }
+  
+  await geminiService.sendRealtimeInput(parts);
 });
 
 ipcMain.handle('send-text-message', async (_event, text: string) => {
@@ -239,4 +322,13 @@ ipcMain.handle('stop-capture', () => {
     geminiService = null;
   }
   return true;
+});
+
+ipcMain.handle('set-interview-mode', (_event, enabled: boolean) => {
+  console.log('Setting interview mode:', enabled);
+  if (geminiService) {
+    geminiService.setInterviewMode(enabled);
+    return true;
+  }
+  return false;
 });

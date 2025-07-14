@@ -12,6 +12,8 @@ export class GeminiService extends EventEmitter {
   private model: any;
   private session: any;
   private config: GeminiConfig;
+  private lastRequestTime: number = 0;
+  private interviewMode: boolean = false;
 
   constructor(config: GeminiConfig) {
     super();
@@ -19,7 +21,13 @@ export class GeminiService extends EventEmitter {
     this.genAI = new GoogleGenerativeAI(config.apiKey);
   }
 
-  async initializeSession() {
+  setInterviewMode(enabled: boolean) {
+    this.interviewMode = enabled;
+    console.log('Interview mode set to:', enabled);
+  }
+
+  async initializeSession(interviewMode: boolean = false) {
+    this.interviewMode = interviewMode;
     try {
       // Using a standard model that definitely exists
       const modelName = this.config.model || 'gemini-1.5-flash';
@@ -38,13 +46,17 @@ export class GeminiService extends EventEmitter {
       });
 
       // Start a multi-turn conversation with initial context
+      const systemPrompt = this.interviewMode ? this.getInterviewModePrompt() : this.getVoiceControlPrompt();
+      
       this.session = this.model.startChat({
         history: [{
           role: 'user',
-          parts: [{text: 'You are an AI interview assistant. Help me answer interview questions by analyzing my screen and audio. Provide concise, relevant answers. When you see a question on screen or hear it in audio, suggest an appropriate response. Keep answers brief and to the point.'}],
+          parts: [{text: systemPrompt}],
         }, {
           role: 'model',
-          parts: [{text: 'I understand. I\'m ready to help you with your interview by analyzing your screen and audio. I\'ll provide concise and relevant suggestions when I detect questions. Please share your screen and audio when you\'re ready.'}],
+          parts: [{text: this.interviewMode 
+            ? 'I understand. I\'m in Interview Mode - I\'ll analyze what I see on your screen and hear in the audio to provide helpful explanations and assistance for your interview.'
+            : 'I understand. I\'m in Voice Control Mode - I\'ll listen for your voice commands to control your Mac. Say things like "open Safari" or "click the button" and I\'ll execute them.'}],
         }],
       });
 
@@ -66,6 +78,19 @@ export class GeminiService extends EventEmitter {
       return;
     }
 
+    // Rate limiting: ensure at least 4 seconds between requests
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    const minDelay = 4000; // 4 seconds = 15 requests per minute max
+    
+    if (timeSinceLastRequest < minDelay) {
+      const waitTime = minDelay - timeSinceLastRequest;
+      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before next request`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    this.lastRequestTime = Date.now();
+
     const maxRetries = 2;
     const retryDelay = Math.pow(2, retryCount) * 1000; // Exponential backoff
 
@@ -78,41 +103,75 @@ export class GeminiService extends EventEmitter {
         // Text input
         parts.push({ text: data.text });
         inputType = 'text';
-      } else if (data.audio) {
-        // Audio input (base64 PCM) - skip if too large for slow connection
-        const audioSize = data.audio.data.length;
-        if (audioSize > 100000) { // Skip very large audio chunks
-          console.log('⚠️  Skipping large audio chunk (', audioSize, 'chars) due to slow connection');
-          return;
-        }
+      } 
+      
+      // Handle audio - Gemini supports audio input!
+      if (data.audio) {
+        // Gemini expects audio as inline data with proper MIME type
         parts.push({
           inlineData: {
-            mimeType: data.audio.mimeType || 'audio/pcm;rate=16000',
+            mimeType: 'audio/wav',  // Changed from audio/pcm
             data: data.audio.data
           }
         });
-        inputType = 'audio';
-      } else if (data.media) {
-        // Image input (base64 JPEG) - skip if too large for slow connection
+        inputType = inputType === 'unknown' ? 'audio' : inputType + '+audio';
+        console.log('🎤 Audio data added to request');
+      }
+      
+      // Handle image
+      if (data.media) {
         const imageSize = data.media.data.length;
-        if (imageSize > 200000) { // Skip very large images
+        if (imageSize > 200000) { // Still limit images for performance
           console.log('⚠️  Skipping large image (', imageSize, 'chars) due to slow connection');
-          return;
+          // Don't return - still send audio if present
+        } else {
+          parts.push({
+            inlineData: {
+              mimeType: data.media.mimeType || 'image/jpeg',
+              data: data.media.data
+            }
+          });
+          inputType = inputType ? inputType + '+image' : 'image';
         }
-        parts.push({
-          inlineData: {
-            mimeType: data.media.mimeType || 'image/jpeg',
-            data: data.media.data
-          }
-        });
-        inputType = 'image';
       }
 
-      // For multimodal inputs, add context instruction
-      if (data.audio || data.media) {
-        parts.push({
-          text: 'Analyze this input in the context of our ongoing conversation. If you detect a question in the audio or see something on screen that requires a response, provide a helpful and concise answer. If it\'s just ambient content, briefly acknowledge what you observe without providing unnecessary responses.'
-        });
+      // For multimodal inputs, add context instruction based on mode
+      if (this.interviewMode) {
+        // Interview mode - explain everything
+        if (data.audio && data.media) {
+          parts.push({
+            text: 'Analyze both the screenshot and audio. Explain what you see on screen, transcribe and respond to any questions or conversation in the audio. Be proactive in offering assistance.'
+          });
+        } else if (data.audio) {
+          parts.push({
+            text: 'Listen to the audio and transcribe any speech. Identify interview questions or topics being discussed and provide helpful responses.'
+          });
+        } else if (data.media) {
+          parts.push({
+            text: 'Analyze the screenshot and explain what you see. Identify any code, errors, or interview-related content that might need explanation.'
+          });
+        }
+      } else {
+        // Voice control mode - only respond to commands
+        if (data.audio && data.media) {
+          parts.push({
+            text: 'Listen for voice commands in the audio. Only respond if you hear commands like "open", "click", "type", etc. Use the screenshot for context when executing commands.'
+          });
+        } else if (data.audio) {
+          parts.push({
+            text: 'Listen for voice commands only. Respond only if you hear a command like "open", "click", "type", etc.'
+          });
+        } else if (data.media) {
+          parts.push({
+            text: 'Screenshot received. Waiting for voice commands.'
+          });
+        }
+      }
+
+      // Only send if we have content
+      if (parts.length === 0) {
+        console.log('⚠️  No valid content to send to Gemini');
+        return;
       }
 
       // Send to persistent chat session (maintains context)
@@ -166,5 +225,59 @@ export class GeminiService extends EventEmitter {
     // Clean up session
     this.session = null;
     this.emit('disconnected');
+  }
+
+  private getInterviewModePrompt(): string {
+    return `You are an AI interview assistant receiving real-time audio and screenshots every 2 seconds.
+
+## Your Role
+- Analyze everything you see AND hear to help the user during their interview
+- Transcribe and respond to interview questions
+- Provide clear explanations of what's on screen
+- Offer suggestions and corrections proactively
+- Help with coding problems, system design, behavioral questions
+
+## What to Do
+- When you hear questions: Transcribe them and provide helpful answers
+- When you see code: Explain what it does, identify bugs, suggest improvements
+- When you see interview platforms (Zoom, Teams, etc.): Note any visible questions or shared content
+- When you see errors: Immediately point them out and suggest fixes
+- When nothing is happening: Stay quiet unless you see something important
+
+## Response Style
+- Be concise but thorough
+- Use bullet points for clarity
+- Highlight important information
+- Provide code snippets when relevant
+- Always transcribe what you hear first
+
+Remember: You're here to help them succeed in their interview!`;
+  }
+
+  private getVoiceControlPrompt(): string {
+    return `You are a voice-controlled Mac automation assistant receiving real-time audio and screenshots every 2 seconds.
+
+## Your Role
+- ONLY respond to direct voice commands
+- Ignore all other conversation and ambient noise
+- Execute Mac system controls when commanded
+
+## Supported Voice Commands
+- "Open [app name]" → {"command": "open_app", "params": {"app": "Safari"}}
+- "Click on [element]" → {"command": "click", "params": {"element": "submit button"}}
+- "Type [text]" → {"command": "type", "params": {"text": "Hello world"}}
+- "Scroll [direction]" → {"command": "scroll", "params": {"direction": "down"}}
+- "Switch to [app]" → {"command": "switch_app", "params": {"app": "Chrome"}}
+- "Close this tab/window" → {"command": "close", "params": {"target": "tab"}}
+- "Take me to [website]" → {"command": "navigate", "params": {"url": "github.com"}}
+
+## Important Rules
+- ONLY respond when you hear a clear voice command
+- Return JSON format for commands
+- Use screenshots for context but don't describe them
+- Stay silent unless executing a command
+- Ignore background conversations
+
+Remember: You're a voice control system, not a chatbot!`;
   }
 }

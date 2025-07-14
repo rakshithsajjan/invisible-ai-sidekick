@@ -6,9 +6,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleClickThrough: () => ipcRenderer.invoke('toggle-click-through'),
   
   // Gemini integration (cheating-daddy style)
-  initializeGemini: () => ipcRenderer.invoke('initialize-gemini'),
+  initializeGemini: (interviewMode: boolean) => ipcRenderer.invoke('initialize-gemini', interviewMode),
+  setInterviewMode: (enabled: boolean) => ipcRenderer.invoke('set-interview-mode', enabled),
   sendImageContent: (imageData: string) => ipcRenderer.invoke('send-image-content', imageData),
   sendAudioContent: (audioData: string) => ipcRenderer.invoke('send-audio-content', audioData),
+  sendCombinedContent: (data: { image?: string; audio?: string }) => ipcRenderer.invoke('send-combined-content', data),
   sendTextMessage: (text: string) => ipcRenderer.invoke('send-text-message', text),
   
   // Event listeners
