@@ -1,0 +1,6 @@
+mlx-use
+python-dotenv
+langchain
+langchain-openai
+langchain-anthropic
+langchain-google-genai
